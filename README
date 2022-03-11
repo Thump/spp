@@ -1,0 +1,14 @@
+- to clone the repo:
+git clone https://github.com/Thump/spp
+
+- to build it
+make compile
+
+- to upload it
+make upload
+
+- to do both
+make all
+
+- you may need to adjust the port in the Makefile:
+PORT=/dev/ttyUSB0
