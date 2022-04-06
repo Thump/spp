@@ -1,44 +1,35 @@
-/* pixel-gadget non-cloud version
+/* spp
  *
- * Brad Black - 2021
- * 
- * Based on DemoReel100 by Mark Kriegsman and as modified by Andrew Tuline for button support
- * 
- * This code only shows variations of the confetti demo and supports a rotary encoder (EC11 style) with switch to change 
- * parameters and switch modes.  Pixel Gadget is intended to be an 8x8 matrix of WS2812 LEDs.
+ *  Changelog
  *
- * Instructions:
- * 
- * Program reads display mode + options from EEPROM and displays it.
- * Button Option:
- *  - Click to change to the next color
- *  - Hold button for > 1 second to shut off screen and write the current mode to EEPROM.
- *  - Double click to change intensity
- * 
- * Rotary Encoder Option:
- * 
- *  - single click = cycle modes: { color, intensity, brightness, auto change }
- *  - double click = save for restart
- *  - long press = screen off
- * 
+ *  Friday, March 11, 2022
+ *   Denis McLaughlin
+ *   - initial Makefile implementation, based on Brad Black's pixel cloud code
+ *
+ *  Monday, March 14, 2022
+ *   Denis McLaughlin
+ *   - got marching pixel to work, with direction change on click and row
+ *     increment and decrement on rotate
+ *
+ *  Tuesday, April 5, 2022
+ *   Denis McLaughlin
+ *   - added paintPaddle() routine, and arrays to support mapping paddle
+ *     position to the relevant LEDs
  */
-//===============
-// Curent issues
-//               NONE
-//================
 
 #include <EEPROM.h>
 
-const char *project_info = "\nPIXEL GADGET - VERSION 2\nDEC 11, 2021\nBRAD BLACK\n";
+const char *project_info = "\nspp\nMarch 14, 2021\nDenis McLaughlin\n";
 
 #define NUM_LEDS 64      // Number of LED's.
 uint8_t max_bright = 40; // Overall brightness definition. It can be changed on the fly.
 
-#define USING_ENCODER true; // Comment out if using button instead of rotary encoder
+// Comment out if using button instead of rotary encoder
+#define USING_ENCODER true;
 
 #ifdef ESP32
 #define buttonPin 17 // Digital pin connected sensor
-#define LED_DT 16    // Data pin to connect to the strip.  Use 4 for ESP8266 and 16 for ESP32
+#define LED_DT 16    // Data pin to connect to the strip. 4:ESP8266, 16:ESP32
 #endif
 
 #if defined(ESP8266)
@@ -63,12 +54,11 @@ uint8_t max_bright = 40; // Overall brightness definition. It can be changed on 
 // Definition for the array of routines to display.
 #define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
 
-//Mode and EEPROM variables
-uint8_t maxMode = 6; // Maximum number of display modes. Would prefer to get this another way, but whatever.
-int eepaddress = 0;
+//Mode and EEPROM variables Maximum number of display modes. Would prefer to
+//get this another way, but whatever.
+uint8_t maxMode = 6; int eepaddress = 0;
 
 // Global variables can be changed on the fly.
-
 struct CRGB leds[NUM_LEDS]; // Initialize our LED array.
 
 uint8_t gCurrentPatternNumber = 0; // Index number of which pattern is current
@@ -76,7 +66,8 @@ uint8_t gHue = 0;                  // rotating "base color" used by many of the 
 uint8_t gIntensity[] = {10, 30, 60, 80, 100};
 uint8_t gCurrentIntensity = 1;
 
-enum mode                                                   // available modes of operation of the gadget
+// available modes of operation of the gadget
+enum mode
 {
   pattern,
   intensity,
@@ -143,8 +134,9 @@ void setup()
   current_brightness = EEPROM.read(eepaddress + 8);
   current_auto_change = EEPROM.read(eepaddress + 12);
 
+  // A safety in case the EEPROM has an illegal value.
   if (gCurrentPatternNumber > maxMode)
-    gCurrentPatternNumber = 0; // A safety in case the EEPROM has an illegal value.
+    gCurrentPatternNumber = 0;
   if (gCurrentIntensity > ARRAY_SIZE(gIntensity))
     gCurrentIntensity = 1;
   if (current_brightness < 1)
@@ -168,171 +160,103 @@ void setup()
   timer = millis();
 } // setup()
 
+
 SimplePatternList gPatterns = {christmas, confetti, confetti_green, confetti_blue, confetti_purple, confetti_red, confetti_yellow, darkness};
+
+// variables for spp
+int led=0;
+int increment=1;
+int ppos=0;
+int plen=6;
+
+// this array is to map a paddle position [0:28] to corresponding LED positions
+uint8_t paddleLEDs[] = {
+00,01,02,03,04,05,06,07,
+15,23,31,39,47,55,63,
+62,61,60,59,58,57,56,
+48,40,32,24,16,8
+};
 
 void loop()
 {
+    leds[led] = CRGB::Green; FastLED.show(); delay(30); 
+    leds[led] = CRGB::Black; FastLED.show(); delay(30);
 
-  if (current_auto_change == 1)
-  {
-    if (millis() - timer > 900000)                         // Change color every 15 minutes when auto_change is enabled
+    led += increment;
+    // if ( led > NUM_LEDS-1 ) { led=0; }
+    // if ( led < 0 )          { led=NUM_LEDS-1; }
+
+    readbutton_encoder();
+    doBBEncoder();
+
+    if ( encoder0Pos > oldEncoder0Pos )
+       led+=8;
+    if ( encoder0Pos < oldEncoder0Pos )
+       led-=8;
+    oldEncoder0Pos = encoder0Pos;
+
+    // make sure the led we're changing stays in range
+    led %= NUM_LEDS;
+
+    paintPaddle(0);
+    ppos += increment;
+    if ( ppos > 27 ) { ppos=0; } 
+    if ( ppos < 0 )  { ppos=27; } 
+    paintPaddle(1);
+}
+
+// This routine uses the global ppos (paddle position) and plen (paddle length)
+// variables to compute which LEDs should be activated for the paddle: if
+// paint is passed as non-zero, it will paint the paddle in its position, if
+// it's 0, then it paints it black
+void paintPaddle(int paint)
+{
+    int color=CRGB::Green;
+    if ( !paint ) { color=CRGB::Black; }
+
+    int start=ppos;
+    for (int i=0; i<plen; i++)
     {
-      gCurrentPatternNumber = (gCurrentPatternNumber + 1) % (ARRAY_SIZE(gPatterns) - 1);
-      Serial.printf("Timer changed pattern to: %i", gCurrentPatternNumber);
-      timer = millis();
-      current_mode = pattern;
+        int index=(ppos+i)%28;
+        int led=paddleLEDs[index];
+        leds[led] = color;
     }
-  }
 
-#ifdef USING_ENCODER
-  readbutton_encoder();
-  doBBEncoder();
-
-  if (encoder0Pos != oldEncoder0Pos)
-  {
-
-    switch (current_mode)
-    {
-    case pattern:
-
-      if (encoder0Pos < 0)
-        encoder0Pos = (ARRAY_SIZE(gPatterns) - 2);
-      if (encoder0Pos > (ARRAY_SIZE(gPatterns) - 2))
-        encoder0Pos = 0;
-      gCurrentPatternNumber = encoder0Pos;
-      Serial.printf("Pattern: %i\n", encoder0Pos);
-      oldEncoder0Pos = encoder0Pos;
-      break;
-    case intensity:
-
-      if (encoder0Pos < 0)
-        encoder0Pos = (ARRAY_SIZE(gIntensity) - 1);
-      if (encoder0Pos > (ARRAY_SIZE(gIntensity) - 1))
-        encoder0Pos = 0;
-      gCurrentIntensity = encoder0Pos;
-      Serial.printf("Itensity: %i\n", encoder0Pos);
-      oldEncoder0Pos = encoder0Pos;
-      break;
-    case brightness:
-
-      if (encoder0Pos < 1)
-        encoder0Pos = 1;
-      if (encoder0Pos > 5)
-        encoder0Pos = 5;
-      current_brightness = encoder0Pos;
-      Serial.printf("Setting Brightness to : %i  Actual brightness will be %i\n", current_brightness, current_brightness * 8);
-      if ((current_brightness * 8) > max_bright)
-        current_brightness = 5;
-      FastLED.setBrightness(current_brightness * 8);
-      oldEncoder0Pos = encoder0Pos;
-      break;
-
-    case auto_change:
-
-      if (encoder0Pos < 0)
-        encoder0Pos = 0;
-      if (encoder0Pos > 1)
-        encoder0Pos = 1;
-      current_auto_change = encoder0Pos;
-      Serial.printf("Setting AutoChange to : %i\n", current_auto_change);
-      oldEncoder0Pos = encoder0Pos;
-      displayImage(IMAGES[current_auto_change]);
-      break;
-    }
-  }
-
-#else
-  readbutton();
-#endif
-
-  EVERY_N_MILLISECONDS(50)
-  {                                     
-    gPatterns[gCurrentPatternNumber](); // Call the current pattern function once, updating the 'leds' array
-  }
-
-  EVERY_N_MILLISECONDS(20)
-  { // slowly cycle the "base color" through the rainbow
-    gHue++;
-  }
-  if (!SLEEPING)
     FastLED.show();
-
-} // loop()
+}
 
 void readbutton_encoder()
 { // Read the button and increase the mode
 
   uint8_t b = checkButton();
 
+  // single click
   if (b == 1)
-  { // Just a click  wake from sleep or change mode
-
+  {
+    // if we're sleeping, wake up
     if (SLEEPING)
     {
-      gCurrentPatternNumber = EEPROM.read(eepaddress);
       SLEEPING = false;
-      value_override = 0;
-      current_mode = pattern;
-      Serial.println("Woke from Sleep");
+      led = 0;
+      increment = 1;
     }
+    // otherwise reverse the direction of the moving led
     else
     {
-
-      current_mode = (current_mode + 1) % (number_of_modes);
-
-      switch (current_mode)
-      {
-      case pattern:
-
-        encoder0Pos = gCurrentPatternNumber;
-        displayRainbow();
-        break;
-      case intensity:
-
-        encoder0Pos = gCurrentIntensity;
-        displayImage(IMAGES[intense]);
-        break;
-
-      case brightness:
-
-        encoder0Pos = current_brightness;
-        displayImage(IMAGES[brite]);
-        break;
-
-      case auto_change:
-
-        encoder0Pos = current_auto_change;
-        displayImage(IMAGES[current_auto_change]);
-        break;
-      }
-      Serial.printf("Changed mode to %i - Pattern: %i - Intensity: %i - Brightness: %i - Autochange: %i - EncoderPos: %i\n", current_mode, gCurrentPatternNumber, gCurrentIntensity, current_brightness, current_auto_change, encoder0Pos);
+        increment *= -1;
     }
   }
 
+  // double click
   if (b == 2)
-  { // A double-click event to save initial pattern
-
-    EEPROM.write(eepaddress, gCurrentPatternNumber);
-    EEPROM.write(eepaddress + 4, gCurrentIntensity);
-    EEPROM.write(eepaddress + 8, current_brightness);
-    EEPROM.write(eepaddress + 12, current_auto_change);
-    EEPROM.commit();
-    displayImage(IMAGES[4]);
-    Serial.printf("Writing: Pattern: %i Intensity: %i  Brightness: %i Autochange: %i\n", gCurrentPatternNumber, gCurrentIntensity, current_brightness, current_auto_change);
+  {
   }
 
+  // long press: sleep the device
   if (b == 3)
-  { // A hold event turn off the display
-
+  {
     SLEEPING = true;
 
-    for (int i = 32; i < 256; i = i + 3)
-    {
-      value_override = i;
-      gPatterns[gCurrentPatternNumber]();
-      FastLED.show();
-      delay(50);
-    }
     fadeToBlackBy(leds, NUM_LEDS, 50);
     delay(50);
     FastLED.show();
@@ -341,74 +265,10 @@ void readbutton_encoder()
     FastLED.show();
     FastLED.clear();
     FastLED.show();
-    gCurrentPatternNumber = ARRAY_SIZE(gPatterns) - 1;
   }
 
-} // readbutton_encoder()
+}
 
-void readbutton()
-{ // Read the button and increase the mode
-
-  uint8_t b = checkButton();
-
-  if (b == 1)
-  { // Just a click event to advance to next pattern
-
-    if (SLEEPING)
-    {
-      gCurrentPatternNumber = EEPROM.read(eepaddress);
-      SLEEPING = false;
-      value_override = 0;
-      Serial.println("Woke from Sleep");
-    }
-    else
-    {
-
-      gCurrentPatternNumber = (gCurrentPatternNumber + 1) % (ARRAY_SIZE(gPatterns) - 1);
-      Serial.println(gCurrentPatternNumber);
-    }
-  }
-
-  if (b == 2)
-  { // A double-click event to change intensity
-    //gCurrentPatternNumber = 0;
-
-    gCurrentIntensity = (gCurrentIntensity + 1) % ARRAY_SIZE(gIntensity);
-    Serial.println(gCurrentIntensity);
-  }
-
-  if (b == 3)
-  { // A hold event to turn off the display
-
-     SLEEPING = true;
-
-    for (int i = 32; i < 256; i = i + 3)
-    {
-      value_override = i;
-      gPatterns[gCurrentPatternNumber]();
-      FastLED.show();
-      delay(50);
-    }
-    fadeToBlackBy(leds, NUM_LEDS, 50);
-    delay(50);
-    FastLED.show();
-    fadeToBlackBy(leds, NUM_LEDS, 50);
-    delay(50);
-    FastLED.show();
-    FastLED.clear();
-    FastLED.show();
-   
-    EEPROM.write(eepaddress,gCurrentPatternNumber);
-    EEPROM.write(eepaddress+4,gCurrentIntensity);
-    EEPROM.commit();
-    Serial.print("Writing: ");
-    Serial.println(gCurrentPatternNumber);    
-
-    gCurrentPatternNumber = ARRAY_SIZE(gPatterns) - 1;
-
-  }
-
-} // readbutton()
 
 void doBBEncoder()
 {
